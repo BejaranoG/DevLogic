@@ -8,7 +8,7 @@ import { findDisposicionConTipo } from "../../../lib/store";
 import { proyectarDisposicion } from "../../../engine/proyeccion/index";
 import { redondear2, tasaADecimal, BASE_360, ZERO } from "../../../engine/shared/decimal-helpers";
 import type Decimal from "decimal.js";
-import type { PeriodoOperativo, Disposicion } from "../../../engine/shared/types";
+import type { PeriodoOperativo, Disposicion, SnapshotDiario } from "../../../engine/shared/types";
 
 export const dynamic = "force-dynamic";
 
@@ -22,44 +22,23 @@ function parseFecha(s: string): Date {
 }
 
 /**
- * Calcula los vencimientos (pagos) que caen dentro del rango de proyección.
- * Para cada periodo pendiente con fecha_limite_pago en [base+1, objetivo],
- * calcula el interés estimado del periodo.
+ * Calcula los vencimientos (pagos) que caen en la fecha objetivo.
+ * Usa los snapshots de M4 para obtener saldos reales proyectados
+ * (incluye refinanciado compuesto en capitalización).
  */
 function calcularVencimientos(
   disp: Disposicion,
   periodos: PeriodoOperativo[],
-  fechaBase: Date,
-  fechaObjetivo: Date
+  fechaObjetivo: Date,
+  snapshots: SnapshotDiario[]
 ) {
-  const tsBase = fechaBase.getTime();
-  const tsObj = new Date(
-    fechaObjetivo.getFullYear(),
-    fechaObjetivo.getMonth(),
-    fechaObjetivo.getDate(),
-    23, 59, 59, 999
-  ).getTime();
-
-  const tasa = tasaADecimal(disp.tasa_base_ordinaria);
-  let baseCapital = disp.saldos.capital_vigente.plus(disp.saldos.capital_vencido_no_exigible);
-
-  // Descontar periodos anteriores al rango (su capital ya habría vencido)
-  const periodosAntes = periodos
-    .filter((p) => !p.liquidada && p.fecha_limite_pago.getTime() <= tsBase && p.monto_capital.greaterThan(ZERO))
-    .sort((a, b) => a.fecha_limite_pago.getTime() - b.fecha_limite_pago.getTime());
-
-  for (const p of periodosAntes) {
-    baseCapital = baseCapital.minus(p.monto_capital);
-    if (baseCapital.lessThan(ZERO)) baseCapital = ZERO;
-  }
-
-  // Solo periodos cuya fecha_limite_pago coincide exactamente con la fecha objetivo
   const tsObjDate = new Date(
     fechaObjetivo.getFullYear(),
     fechaObjetivo.getMonth(),
     fechaObjetivo.getDate()
   ).getTime();
 
+  // Only periodos with fecha_limite_pago on the exact target date
   const enFecha = periodos
     .filter((p) => {
       if (p.liquidada) return false;
@@ -72,20 +51,68 @@ function calcularVencimientos(
     })
     .sort((a, b) => a.fecha_limite_pago.getTime() - b.fecha_limite_pago.getTime());
 
+  if (enFecha.length === 0) return [];
+
+  // Find snapshot from the day BEFORE the vencimiento to get pre-movement saldos.
+  // The snapshot on the vencimiento day already moved saldos to impago (step 1 of loop),
+  // so we need the day before to see what was vigente.
+  const dayBeforeTs = tsObjDate - 86400000; // 1 day before
+  let preSnapshot = snapshots.find((s) => {
+    const sTs = new Date(s.fecha.getFullYear(), s.fecha.getMonth(), s.fecha.getDate()).getTime();
+    return sTs === dayBeforeTs;
+  });
+
+  // Fallback: if no snapshot the day before (e.g. first day of projection), use T₀ saldos
+  if (!preSnapshot && snapshots.length > 0) {
+    // Try the snapshot on the target date itself
+    preSnapshot = snapshots.find((s) => {
+      const sTs = new Date(s.fecha.getFullYear(), s.fecha.getMonth(), s.fecha.getDate()).getTime();
+      return sTs === tsObjDate;
+    });
+  }
+
+  const tasa = tasaADecimal(disp.tasa_base_ordinaria);
   const vencimientos: any[] = [];
 
   for (const p of enFecha) {
-    let base = baseCapital;
-    if (disp.esquema_interes === "capitalizacion") {
-      base = base.plus(disp.saldos.interes_refinanciado_vigente).plus(disp.saldos.interes_refinanciado_vne);
+    // Calculate interest for this period using projected base
+    let baseInteres: Decimal;
+    if (preSnapshot) {
+      const ps = preSnapshot.saldos;
+      baseInteres = ps.capital_vigente.plus(ps.capital_vencido_no_exigible);
+      if (disp.esquema_interes === "capitalizacion") {
+        baseInteres = baseInteres
+          .plus(ps.interes_refinanciado_vigente)
+          .plus(ps.interes_refinanciado_vne);
+      }
+    } else {
+      // Fallback to T₀ saldos
+      baseInteres = disp.saldos.capital_vigente.plus(disp.saldos.capital_vencido_no_exigible);
+      if (disp.esquema_interes === "capitalizacion") {
+        baseInteres = baseInteres
+          .plus(disp.saldos.interes_refinanciado_vigente)
+          .plus(disp.saldos.interes_refinanciado_vne);
+      }
     }
 
-    const interesPeriodo = base.isZero() || p.dias_periodo <= 0
+    const interesPeriodo = baseInteres.isZero() || p.dias_periodo <= 0
       ? ZERO
-      : base.mul(tasa).div(BASE_360).mul(p.dias_periodo);
+      : baseInteres.mul(tasa).div(BASE_360).mul(p.dias_periodo);
 
     const capitalPeriodo = p.monto_capital;
-    const totalPeriodo = interesPeriodo.plus(capitalPeriodo);
+
+    // For capitalización: refinanciado acumulado becomes exigible when capital vences
+    let refinanciadoExigible = ZERO;
+    if (disp.esquema_interes === "capitalizacion" && preSnapshot) {
+      refinanciadoExigible = preSnapshot.saldos.interes_refinanciado_vigente
+        .plus(preSnapshot.saldos.interes_refinanciado_vne);
+    } else if (disp.esquema_interes === "capitalizacion") {
+      // Fallback to T₀
+      refinanciadoExigible = disp.saldos.interes_refinanciado_vigente
+        .plus(disp.saldos.interes_refinanciado_vne);
+    }
+
+    const totalPeriodo = capitalPeriodo.plus(interesPeriodo).plus(refinanciadoExigible);
 
     vencimientos.push({
       numero_amortizacion: p.numero_amortizacion,
@@ -93,14 +120,9 @@ function calcularVencimientos(
       dias_periodo: p.dias_periodo,
       capital: dec(capitalPeriodo),
       interes_estimado: dec(interesPeriodo),
+      refinanciado_exigible: dec(refinanciadoExigible),
       total: dec(totalPeriodo),
     });
-
-    // Reducir base para siguientes periodos
-    if (capitalPeriodo.greaterThan(ZERO)) {
-      baseCapital = baseCapital.minus(capitalPeriodo);
-      if (baseCapital.lessThan(ZERO)) baseCapital = ZERO;
-    }
   }
 
   return vencimientos;
@@ -153,12 +175,12 @@ export async function POST(request: Request) {
       fechaObj
     );
 
-    // Calcular vencimientos en el rango de proyección
+    // Calcular vencimientos using M4 snapshots for accurate refinanciado
     const vencimientos = calcularVencimientos(
       dnorm.disposicion,
       dnorm.periodos,
-      dnorm.disposicion.fecha_saldo,
-      fechaObj
+      fechaObj,
+      resultado.snapshots
     );
 
     const sf = resultado.saldos_finales;

@@ -269,7 +269,7 @@ export default function DetailPage() {
                   {v.dias_periodo + " días de interés"}
                 </span>
               </div>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
+              <div style={{ display: "grid", gridTemplateColumns: v.refinanciado_exigible > 0 ? "1fr 1fr 1fr 1fr" : "1fr 1fr 1fr", gap: 12 }}>
                 <div>
                   <div style={{ fontSize: 11, color: "rgba(255,255,255,.5)", marginBottom: 2 }}>Capital</div>
                   <div style={{ fontSize: 16, fontWeight: 600, fontFamily: "'Geist Mono', monospace" }}>{fmt(v.capital)}</div>
@@ -278,6 +278,12 @@ export default function DetailPage() {
                   <div style={{ fontSize: 11, color: "rgba(255,255,255,.5)", marginBottom: 2 }}>Interés estimado</div>
                   <div style={{ fontSize: 16, fontWeight: 600, fontFamily: "'Geist Mono', monospace", color: "#93c5fd" }}>{fmt(v.interes_estimado)}</div>
                 </div>
+                {v.refinanciado_exigible > 0 && (
+                  <div>
+                    <div style={{ fontSize: 11, color: "rgba(255,255,255,.5)", marginBottom: 2 }}>Int. refinanciado</div>
+                    <div style={{ fontSize: 16, fontWeight: 600, fontFamily: "'Geist Mono', monospace", color: "#c4b5fd" }}>{fmt(v.refinanciado_exigible)}</div>
+                  </div>
+                )}
                 <div>
                   <div style={{ fontSize: 11, color: "rgba(255,255,255,.5)", marginBottom: 2 }}>Total a pagar</div>
                   <div style={{ fontSize: 20, fontWeight: 700, fontFamily: "'Geist Mono', monospace", color: "#fbbf24" }}>{fmt(v.total)}</div>
@@ -288,11 +294,13 @@ export default function DetailPage() {
           {proj.vencimientos.length > 1 && (() => {
             const totalCap = proj.vencimientos.reduce((s: number, v: any) => s + v.capital, 0);
             const totalInt = proj.vencimientos.reduce((s: number, v: any) => s + v.interes_estimado, 0);
+            const totalRef = proj.vencimientos.reduce((s: number, v: any) => s + (v.refinanciado_exigible || 0), 0);
             const totalPagar = proj.vencimientos.reduce((s: number, v: any) => s + v.total, 0);
+            const hasRef = totalRef > 0;
             return (
               <div style={{
                 borderTop: "2px solid rgba(255,255,255,.2)", marginTop: 8, paddingTop: 10,
-                display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12,
+                display: "grid", gridTemplateColumns: hasRef ? "1fr 1fr 1fr 1fr" : "1fr 1fr 1fr", gap: 12,
               }}>
                 <div>
                   <div style={{ fontSize: 11, color: "rgba(255,255,255,.5)" }}>Total capital</div>
@@ -302,6 +310,12 @@ export default function DetailPage() {
                   <div style={{ fontSize: 11, color: "rgba(255,255,255,.5)" }}>Total interés</div>
                   <div style={{ fontSize: 14, fontWeight: 700, fontFamily: "'Geist Mono', monospace", color: "#93c5fd" }}>{fmt(totalInt)}</div>
                 </div>
+                {hasRef && (
+                  <div>
+                    <div style={{ fontSize: 11, color: "rgba(255,255,255,.5)" }}>Total refinanciado</div>
+                    <div style={{ fontSize: 14, fontWeight: 700, fontFamily: "'Geist Mono', monospace", color: "#c4b5fd" }}>{fmt(totalRef)}</div>
+                  </div>
+                )}
                 <div>
                   <div style={{ fontSize: 11, color: "rgba(255,255,255,.5)" }}>Gran total</div>
                   <div style={{ fontSize: 18, fontWeight: 700, fontFamily: "'Geist Mono', monospace", color: "#fbbf24" }}>{fmt(totalPagar)}</div>

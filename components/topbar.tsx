@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { getCarteraSeleccionada } from "@/lib/cartera-context";
 import { useAuth } from "@/lib/auth-context";
@@ -8,7 +8,9 @@ import { useAuth } from "@/lib/auth-context";
 export function Topbar() {
   const [search, setSearch] = useState("");
   const [results, setResults] = useState<any[]>([]);
+  const [totalResults, setTotalResults] = useState(0);
   const [open, setOpen] = useState(false);
+  const [searching, setSearching] = useState(false);
   const [syncLabel, setSyncLabel] = useState("Esperando…");
   const [syncStatus, setSyncStatus] = useState<"loading" | "ok" | "error">("loading");
   const [syncing, setSyncing] = useState(false);
@@ -17,6 +19,7 @@ export function Topbar() {
   const router = useRouter();
   const { user } = useAuth();
   const ref = useRef<HTMLDivElement>(null);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     checkStatus(); // Check once on mount
@@ -96,24 +99,47 @@ export function Topbar() {
     setSyncing(false);
   }
 
-  async function onSearch(q: string) {
+  function onSearch(q: string) {
     setSearch(q);
-    if (q.length < 2) { setOpen(false); return; }
-    try {
-      const r = await fetch("/api/disposiciones");
-      const data = await r.json();
-      if (!data.disposiciones) return;
-      const ql = q.toLowerCase();
-      const filtered = data.disposiciones
-        .filter((d: any) =>
-          String(d.folio).includes(ql) ||
-          String(d.cliente).toLowerCase().includes(ql) ||
-          String(d.ejecutivo).toLowerCase().includes(ql)
-        )
-        .slice(0, 8);
-      setResults(filtered);
-      setOpen(filtered.length > 0);
-    } catch {}
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+
+    if (q.length < 2) {
+      setOpen(false);
+      setResults([]);
+      setTotalResults(0);
+      setSearching(false);
+      return;
+    }
+
+    setSearching(true);
+    debounceRef.current = setTimeout(async () => {
+      try {
+        const r = await fetch("/api/search?q=" + encodeURIComponent(q));
+        const data = await r.json();
+        setResults(data.results || []);
+        setTotalResults(data.total || 0);
+        setOpen((data.results || []).length > 0);
+      } catch {
+        setResults([]);
+        setTotalResults(0);
+        setOpen(false);
+      }
+      setSearching(false);
+    }, 300);
+  }
+
+  function goToSearchPage() {
+    if (search.trim().length >= 2) {
+      setOpen(false);
+      router.push("/buscar?q=" + encodeURIComponent(search.trim()));
+    }
+  }
+
+  function handleSearchKeyDown(e: React.KeyboardEvent) {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      goToSearchPage();
+    }
   }
 
   function statusDot(etapa: number, dias: number) {
@@ -135,15 +161,22 @@ export function Topbar() {
               placeholder="Buscar por folio, cliente o ejecutivo…"
               value={search}
               onChange={(e) => onSearch(e.target.value)}
+              onKeyDown={handleSearchKeyDown}
               autoComplete="off"
             />
             {search && (
-              <button className="search-clear" onClick={() => { setSearch(""); setOpen(false); }}>
+              <button className="search-clear" onClick={() => { setSearch(""); setOpen(false); setSearching(false); if (debounceRef.current) clearTimeout(debounceRef.current); }}>
                 {"×"}
               </button>
             )}
           </div>
-          {open && (
+          {searching && search.length >= 2 && (
+            <div className="search-dropdown open" style={{ padding: "16px", textAlign: "center", color: "var(--text3)", fontSize: 13 }}>
+              <div className="spinner" style={{ width: 18, height: 18, margin: "0 auto 6px", borderWidth: 2 }} />
+              Buscando…
+            </div>
+          )}
+          {!searching && open && (
             <div className="search-dropdown open">
               {results.map((r) => (
                 <div
@@ -162,6 +195,24 @@ export function Topbar() {
                   </div>
                 </div>
               ))}
+              {totalResults > results.length && (
+                <div
+                  className="sd-item"
+                  onClick={goToSearchPage}
+                  style={{ justifyContent: "center", color: "var(--purple)", fontWeight: 600, fontSize: 13, cursor: "pointer", padding: "10px 14px" }}
+                >
+                  Ver los {totalResults} resultados →
+                </div>
+              )}
+              {totalResults > 0 && totalResults <= results.length && (
+                <div
+                  className="sd-item"
+                  onClick={goToSearchPage}
+                  style={{ justifyContent: "center", color: "var(--purple)", fontWeight: 600, fontSize: 13, cursor: "pointer", padding: "10px 14px" }}
+                >
+                  Ver resultados en detalle →
+                </div>
+              )}
             </div>
           )}
         </div>
