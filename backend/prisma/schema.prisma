@@ -1,0 +1,312 @@
+// ═══════════════════════════════════════════════════════════════════════════
+// Logic Auth — Prisma Schema v2
+// PostgreSQL · UUID primary keys · Soft delete · Enums · Audit trail
+// ═══════════════════════════════════════════════════════════════════════════
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["fullTextSearch"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ENUMS
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Estado del usuario en el flujo de registro → aprobación → vida útil.
+/// pendiente:    se registró pero no ha sido aprobado por un admin
+/// aprobado:     admin aprobó, puede hacer login
+/// rechazado:    admin rechazó la solicitud
+/// desactivado:  admin desactivó una cuenta que antes estaba activa
+/// bloqueado:    bloqueado por intentos fallidos o acción manual
+enum UserStatus {
+  pendiente
+  aprobado
+  rechazado
+  desactivado
+  bloqueado
+}
+
+/// Módulo al que pertenece un permiso.
+/// Permite agrupar permisos en la UI de administración.
+enum PermissionModule {
+  auth
+  cartera
+  proyeccion
+  admin
+  sync
+  reportes
+}
+
+/// Eventos que se registran en la bitácora de auditoría.
+/// Cada acción relevante del sistema tiene un tipo explícito.
+enum AuditAction {
+  // Auth
+  login
+  login_fallido
+  logout
+  registro_solicitud
+  registro_verificado
+  password_cambiado
+
+  // Admin → usuarios
+  usuario_aprobado
+  usuario_rechazado
+  usuario_desactivado
+  usuario_bloqueado
+  usuario_reactivado
+  perfil_actualizado
+  rol_asignado
+  permiso_otorgado
+  permiso_revocado
+
+  // Admin → cartera
+  cartera_asignada
+  cartera_revocada
+  ejecutivo_mapeado
+
+  // Operaciones
+  sincronizacion
+  proyeccion_individual
+  proyeccion_masiva
+  exportacion
+
+  // Consultas sensibles
+  consulta_disposiciones
+  consulta_disposicion
+  consulta_audit_log
+  consulta_usuarios
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ROLES
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Rol principal del sistema. Cada usuario tiene exactamente uno.
+/// Los 5 roles son fijos (seed), pero la tabla permite extensión futura.
+model Role {
+  id          String   @id @default(uuid()) @db.Uuid
+  clave       String   @unique @db.VarChar(50)
+  nombre      String   @db.VarChar(100)
+  descripcion String?  @db.VarChar(255)
+  es_sistema  Boolean  @default(false)  /// true = no se puede eliminar (admin_maestro, etc)
+
+  created_at  DateTime @default(now())
+  updated_at  DateTime @updatedAt
+
+  // Relaciones
+  usuarios    User[]
+  permisos    RolePermission[]
+
+  @@map("roles")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// PERMISOS
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Permiso atómico. Representa una acción o capacidad específica.
+/// Se asigna a roles (RolePermission) o a usuarios individuales (UserPermission).
+model Permission {
+  id          String           @id @default(uuid()) @db.Uuid
+  clave       String           @unique @db.VarChar(80)
+  nombre      String           @db.VarChar(150)
+  descripcion String?          @db.VarChar(255)
+  modulo      PermissionModule
+
+  created_at  DateTime         @default(now())
+
+  // Relaciones
+  roles       RolePermission[]
+  usuarios    UserPermission[]
+
+  @@index([modulo])
+  @@map("permissions")
+}
+
+/// Tabla pivote: qué permisos tiene cada rol.
+/// Es la fuente principal de autorización. Si un rol tiene el permiso,
+/// todos los usuarios con ese rol lo heredan (salvo override en UserPermission).
+model RolePermission {
+  id            String   @id @default(uuid()) @db.Uuid
+  role_id       String   @db.Uuid
+  permission_id String   @db.Uuid
+
+  asignado_por  String?  @db.Uuid  /// user_id del admin que lo asignó (null = seed)
+  created_at    DateTime @default(now())
+
+  // Relaciones
+  role       Role       @relation(fields: [role_id], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permission_id], references: [id], onDelete: Cascade)
+
+  @@unique([role_id, permission_id])
+  @@index([role_id])
+  @@index([permission_id])
+  @@map("role_permissions")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// USUARIOS
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Usuario del sistema. Flujo de vida:
+///   registro (pendiente) → verificación de código → aprobación por admin (aprobado)
+///   → uso normal → posible desactivación/bloqueo
+///
+/// Soft delete: deleted_at != null significa eliminado lógicamente.
+/// Nunca se borra físicamente un usuario (auditoría lo requiere).
+model User {
+  id                    String     @id @default(uuid()) @db.Uuid
+  email                 String     @unique @db.VarChar(255)
+  password_hash         String     @db.VarChar(255)
+
+  // Datos personales
+  nombre                String     @default("") @db.VarChar(100)
+  apellido              String     @default("") @db.VarChar(100)
+  area                  String     @default("Crédito") @db.VarChar(80)
+
+  // Identificación interna
+  numero_identificacion String     @unique @db.VarChar(20) /// LOG-0001, LOG-0002, etc.
+
+  // Estado
+  status                UserStatus @default(pendiente)
+  verificado            Boolean    @default(false)
+
+  // Rol principal (FK)
+  role_id               String     @db.Uuid
+  role                  Role       @relation(fields: [role_id], references: [id])
+
+  // Mapeo a Google Sheets (solo ejecutivos)
+  /// Valor exacto de la columna EJECUTIVO LÍNEA en el Sheet de cartera.
+  /// Se compara case-insensitive para filtrar disposiciones.
+  nombre_en_sheets      String?    @db.VarChar(200)
+
+  // Verificación de registro
+  codigo_verificacion   String?    @db.VarChar(6)
+  codigo_expira_at      DateTime?
+
+  // Timestamps
+  created_at            DateTime   @default(now())
+  updated_at            DateTime   @updatedAt
+  last_login_at         DateTime?
+  deleted_at            DateTime?  /// Soft delete: null = activo
+
+  // Seguridad
+  intentos_login_fallidos Int      @default(0)
+  bloqueado_hasta       DateTime?  /// Auto-bloqueo temporal tras N intentos
+
+  // Relaciones
+  permisos_extra        UserPermission[]
+  asignaciones_cartera  PortfolioAssignment[]
+  audit_logs_propios    AuditLog[]            @relation("AuditUser")
+  audit_logs_admin      AuditLog[]            @relation("AuditAdmin")
+
+  @@index([status])
+  @@index([role_id])
+  @@index([nombre_en_sheets])
+  @@index([deleted_at])
+  @@map("users")
+}
+
+/// Override de permisos a nivel de usuario individual.
+///   granted = true  → el usuario tiene este permiso AUNQUE su rol no lo tenga
+///   granted = false → el usuario NO tiene este permiso AUNQUE su rol sí lo tenga
+///
+/// Resolución: permisos_efectivos = (permisos_del_rol + user_granted) - user_revoked
+model UserPermission {
+  id            String   @id @default(uuid()) @db.Uuid
+  user_id       String   @db.Uuid
+  permission_id String   @db.Uuid
+  granted       Boolean  @default(true)
+
+  asignado_por  String?  @db.Uuid  /// user_id del admin que lo asignó
+  motivo        String?  @db.VarChar(255) /// Razón del override
+  created_at    DateTime @default(now())
+
+  // Relaciones
+  user       User       @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permission_id], references: [id], onDelete: Cascade)
+
+  @@unique([user_id, permission_id])
+  @@index([user_id])
+  @@map("user_permissions")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ASIGNACIÓN DE CARTERA
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Asigna a un usuario (generalmente ejecutivo) una o más "carteras"
+/// identificadas por el nombre del ejecutivo en Google Sheets.
+///
+/// Un ejecutivo puede tener múltiples asignaciones (si cubre a otro ejecutivo).
+/// El campo `activo` permite revocar sin borrar el historial.
+model PortfolioAssignment {
+  id                      String   @id @default(uuid()) @db.Uuid
+  user_id                 String   @db.Uuid
+  nombre_ejecutivo_sheets String   @db.VarChar(200) /// Valor exacto de EJECUTIVO LÍNEA en Sheets
+
+  asignado_por            String?  @db.Uuid  /// user_id del admin que lo asignó
+  activo                  Boolean  @default(true)
+  motivo                  String?  @db.VarChar(255) /// "Cobertura vacacional", "Titular", etc.
+
+  created_at              DateTime @default(now())
+  revocado_at             DateTime? /// Fecha en que se desactivó
+
+  // Relaciones
+  user User @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@index([user_id])
+  @@index([nombre_ejecutivo_sheets])
+  @@index([activo])
+  @@map("portfolio_assignments")
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// AUDITORÍA
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Registro inmutable de toda acción relevante en el sistema.
+/// Append-only: nunca se modifica ni se borra.
+///
+/// Dos relaciones con User:
+///   - user:  el usuario que ejecutó la acción (null si no autenticado, e.g. login_fallido)
+///   - admin: si la acción fue ejecutada por un admin sobre otro usuario
+///
+/// detalle es un JSON libre para datos específicos de cada acción.
+model AuditLog {
+  id          String      @id @default(uuid()) @db.Uuid
+
+  // Quién ejecutó la acción
+  user_id     String?     @db.Uuid
+  user        User?       @relation("AuditUser", fields: [user_id], references: [id], onDelete: SetNull)
+
+  // Si fue una acción admin, sobre quién se ejecutó
+  target_user_id String?  @db.Uuid
+  target_user    User?    @relation("AuditAdmin", fields: [target_user_id], references: [id], onDelete: SetNull)
+
+  // Qué pasó
+  accion      AuditAction
+  detalle     Json        @default("{}")
+
+  // Contexto de la request
+  ip_address  String?     @db.VarChar(45)  /// IPv4 o IPv6
+  user_agent  String?     @db.VarChar(500)
+  endpoint    String?     @db.VarChar(255) /// e.g. "POST /api/auth/login"
+
+  // Timestamp inmutable
+  created_at  DateTime    @default(now())
+
+  @@index([user_id])
+  @@index([target_user_id])
+  @@index([accion])
+  @@index([created_at])
+  @@index([user_id, accion])          /// Consulta: "qué hizo este usuario"
+  @@index([accion, created_at])       /// Consulta: "todos los logins de hoy"
+  @@index([target_user_id, accion])   /// Consulta: "qué le han hecho a este usuario"
+  @@map("audit_logs")
+}
