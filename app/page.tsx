@@ -201,54 +201,9 @@ export default function Dashboard() {
 
   if (loading) {
     return (
-      <div style={{ padding: "24px 0" }}>
-        {/* Skeleton header */}
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24 }}>
-          <div>
-            <div className="skeleton" style={{ width: 220, height: 24, borderRadius: 6, marginBottom: 8 }} />
-            <div className="skeleton" style={{ width: 160, height: 14, borderRadius: 4 }} />
-          </div>
-          <div className="skeleton" style={{ width: 100, height: 14, borderRadius: 4 }} />
-        </div>
-
-        {/* Skeleton KPI cards */}
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 14, marginBottom: 24 }}>
-          {[1, 2, 3, 4].map((i) => (
-            <div key={i} style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 10, padding: 18 }}>
-              <div className="skeleton" style={{ width: 80, height: 12, borderRadius: 4, marginBottom: 10 }} />
-              <div className="skeleton" style={{ width: 120, height: 22, borderRadius: 4 }} />
-            </div>
-          ))}
-        </div>
-
-        {/* Skeleton table */}
-        <div style={{ background: "var(--surface)", border: "1px solid var(--border)", borderRadius: 10, padding: 16 }}>
-          {[1, 2, 3, 4, 5, 6].map((i) => (
-            <div key={i} style={{ display: "flex", gap: 16, padding: "12px 0", borderBottom: i < 6 ? "1px solid var(--border)" : "none" }}>
-              <div className="skeleton" style={{ width: 70, height: 14, borderRadius: 4 }} />
-              <div className="skeleton" style={{ width: 180, height: 14, borderRadius: 4 }} />
-              <div className="skeleton" style={{ width: 100, height: 14, borderRadius: 4 }} />
-              <div className="skeleton" style={{ width: 80, height: 14, borderRadius: 4, marginLeft: "auto" }} />
-            </div>
-          ))}
-        </div>
-
-        {/* Status message */}
-        <div style={{ textAlign: "center", padding: "20px 0", fontSize: 13, color: "var(--text3)" }}>
-          {status}
-        </div>
-
-        <style>{`
-          .skeleton {
-            background: linear-gradient(90deg, var(--border) 25%, rgba(99,102,241,.08) 50%, var(--border) 75%);
-            background-size: 200% 100%;
-            animation: skeleton-shimmer 1.5s ease-in-out infinite;
-          }
-          @keyframes skeleton-shimmer {
-            0% { background-position: 200% 0; }
-            100% { background-position: -200% 0; }
-          }
-        `}</style>
+      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "80px 20px", gap: 16 }}>
+        <div className="spinner" />
+        <p style={{ fontSize: 14, color: "var(--text3)" }}>{status}</p>
       </div>
     );
   }
@@ -258,7 +213,7 @@ export default function Dashboard() {
       <div style={{ textAlign: "center", padding: "80px 20px" }}>
         <h2 style={{ fontSize: 18, fontWeight: 600, marginBottom: 8 }}>Error</h2>
         <p style={{ fontSize: 14, color: "var(--text3)", maxWidth: 400, margin: "0 auto" }}>{status}</p>
-        <button onClick={smartLoad} className="btn-primary" style={{ marginTop: 16 }}>Reintentar</button>
+        <button onClick={syncThenLoad} className="btn-primary" style={{ marginTop: 16 }}>Reintentar</button>
       </div>
     );
   }
