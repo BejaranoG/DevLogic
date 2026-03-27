@@ -128,12 +128,25 @@ export function proyectarDisposicion(
 
       evento = "vencimiento_capital";
 
-      // En capitalización: al vencer capital, refinanciado vigente pasa a impago
-      if (esquema === "capitalizacion" && !enEtapa3()) {
-        saldos.interes_refinanciado_impago = saldos.interes_refinanciado_impago.plus(
-          saldos.interes_refinanciado_vigente
-        );
-        saldos.interes_refinanciado_vigente = ZERO;
+      // En capitalización: al vencer capital, refinanciado vigente se vuelve exigible
+      // (proporcional: solo lo acumulado desde el último vencimiento de capital)
+      if (esquema === "capitalizacion") {
+        if (!enEtapa3()) {
+          // Pre-E3: ref_vigente → ref_impago (todo, porque se resetea en cada vencimiento)
+          saldos.interes_refinanciado_impago = saldos.interes_refinanciado_impago.plus(
+            saldos.interes_refinanciado_vigente
+          );
+          saldos.interes_refinanciado_vigente = ZERO;
+        } else {
+          // E3: ref_VNE → ref_VE (proporcional al capital que vence)
+          const totalCapVNE = saldos.capital_vencido_no_exigible.plus(monto); // antes de restar
+          if (totalCapVNE.greaterThan(ZERO)) {
+            const proporcion = monto.div(totalCapVNE);
+            const refMover = saldos.interes_refinanciado_vne.mul(proporcion);
+            saldos.interes_refinanciado_ve = saldos.interes_refinanciado_ve.plus(refMover);
+            saldos.interes_refinanciado_vne = saldos.interes_refinanciado_vne.minus(refMover);
+          }
+        }
       }
 
       // En acumulación: al vencer capital, interés vigente pasa a impago

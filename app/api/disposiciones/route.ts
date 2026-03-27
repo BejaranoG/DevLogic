@@ -72,41 +72,88 @@ export async function GET(request: Request) {
     if (disp.proyectable) proyectables++;
     else noProyectables++;
 
-    // Build amortization table from periodos (has resolved dates)
-    const amortizaciones = d.periodos
+    // Build amortization table with progressive interest estimation.
+    // For pending periods: progressively discount capital and accumulate refinanciado.
+    // Key rule (capitalización): refinanciado accumulated between two capital payments
+    // becomes exigible at the next capital payment, then resets.
+    const tasaDec = disp.tasa_base_ordinaria.div(100);
+    const hoy = hoyDatePDT();
+
+    // Sort periodos for sequential processing
+    const periodosOrdenados = d.periodos
       .filter((p) => p.monto_capital.greaterThan(ZERO) || !p.es_sintetica)
-      .sort((a, b) => a.numero_amortizacion - b.numero_amortizacion)
-      .map((p) => {
-        // Estimate interest for the period
-        const baseInt = disp.saldos.capital_vigente.plus(disp.saldos.capital_vencido_no_exigible);
-        let base = baseInt;
-        if (disp.esquema_interes === "capitalizacion") {
+      .sort((a, b) => a.numero_amortizacion - b.numero_amortizacion);
+
+    // Running balances for pending periods (start from T₀ saldos)
+    let runningCapital = disp.saldos.capital_vigente.plus(disp.saldos.capital_vencido_no_exigible);
+    let runningRef = disp.esquema_interes === "capitalizacion"
+      ? disp.saldos.interes_refinanciado_vigente.plus(disp.saldos.interes_refinanciado_vne)
+      : ZERO;
+    const isCapitalizacion = disp.esquema_interes === "capitalizacion";
+
+    const amortizaciones = periodosOrdenados.map((p) => {
+      let intEst: typeof ZERO;
+      let refExigible = ZERO;
+
+      if (p.liquidada) {
+        // Liquidated: estimate with T₀ saldos (informational, already paid)
+        let base = disp.saldos.capital_vigente.plus(disp.saldos.capital_vencido_no_exigible);
+        if (isCapitalizacion) {
           base = base.plus(disp.saldos.interes_refinanciado_vigente).plus(disp.saldos.interes_refinanciado_vne);
         }
-        const tasaDec = disp.tasa_base_ordinaria.div(100);
-        const intEst = base.isZero() || p.dias_periodo <= 0
+        intEst = base.isZero() || p.dias_periodo <= 0
+          ? ZERO
+          : base.mul(tasaDec).div(360).mul(p.dias_periodo);
+      } else {
+        // Pending/Vencida: use running balance with progressive discount
+        let base = runningCapital;
+        if (isCapitalizacion) {
+          base = base.plus(runningRef);
+        }
+
+        intEst = base.isZero() || p.dias_periodo <= 0
           ? ZERO
           : base.mul(tasaDec).div(360).mul(p.dias_periodo);
 
-        const hoy = hoyDatePDT();
-        let status: string;
-        if (p.liquidada) status = "liquidada";
-        else if (p.fecha_inicio_impago <= hoy) status = "vencida";
-        else status = "pendiente";
+        // Update running balances
+        if (isCapitalizacion && intEst.greaterThan(ZERO)) {
+          // This period's interest converts to refinanciado
+          runningRef = runningRef.plus(intEst);
+        }
 
-        return {
-          numero: p.numero_amortizacion,
-          fecha_contractual: p.fecha_contractual.toISOString().slice(0, 10),
-          fecha_limite_pago: p.fecha_limite_pago.toISOString().slice(0, 10),
-          fecha_inicio_impago: p.fecha_inicio_impago.toISOString().slice(0, 10),
-          dias_periodo: p.dias_periodo,
-          capital: dec(p.monto_capital),
-          interes_estimado: dec(intEst),
-          total: dec(p.monto_capital.plus(intEst)),
-          status,
-          es_sintetica: p.es_sintetica,
-        };
-      });
+        // When capital vences: refinanciado accumulated since last capital payment
+        // becomes exigible (collected), then resets for the next tranche
+        if (p.monto_capital.greaterThan(ZERO)) {
+          if (isCapitalizacion) {
+            refExigible = runningRef; // All accumulated ref becomes exigible
+            runningRef = ZERO;        // Reset: collected at this capital payment
+          }
+          runningCapital = runningCapital.minus(p.monto_capital);
+          if (runningCapital.lessThan(ZERO)) runningCapital = ZERO;
+        }
+      }
+
+      let status: string;
+      if (p.liquidada) status = "liquidada";
+      else if (p.fecha_inicio_impago <= hoy) status = "vencida";
+      else status = "pendiente";
+
+      const totalRow = p.monto_capital.plus(intEst).plus(refExigible);
+
+      return {
+        numero: p.numero_amortizacion,
+        fecha_contractual: p.fecha_contractual.toISOString().slice(0, 10),
+        fecha_limite_pago: p.fecha_limite_pago.toISOString().slice(0, 10),
+        fecha_inicio_impago: p.fecha_inicio_impago.toISOString().slice(0, 10),
+        dias_periodo: p.dias_periodo,
+        capital: dec(p.monto_capital),
+        interes_estimado: dec(intEst),
+        refinanciado_exigible: dec(refExigible),
+        total: dec(totalRow),
+        status,
+        es_sintetica: p.es_sintetica,
+      };
+    });
 
     return {
       folio: disp.folio_disposicion,

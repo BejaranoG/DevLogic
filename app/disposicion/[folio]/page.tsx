@@ -506,6 +506,8 @@ export default function DetailPage() {
             const vencidas = amorts.filter((a: any) => a.status === "vencida").length;
             const totalCapital = amorts.reduce((s: number, a: any) => s + a.capital, 0);
             const totalInteres = amorts.reduce((s: number, a: any) => s + a.interes_estimado, 0);
+            const totalRef = amorts.reduce((s: number, a: any) => s + (a.refinanciado_exigible || 0), 0);
+            const hasRef = totalRef > 0;
             const capitalPendiente = amorts.filter((a: any) => a.status !== "liquidada").reduce((s: number, a: any) => s + a.capital, 0);
 
             return (
@@ -549,6 +551,7 @@ export default function DetailPage() {
                         <th>Días periodo</th>
                         <th className="num">Capital</th>
                         <th className="num">Interés estimado</th>
+                        {hasRef && <th className="num">Int. refinanciado</th>}
                         <th className="num">Total</th>
                         <th style={{ width: 90 }}>Status</th>
                       </tr>
@@ -562,6 +565,7 @@ export default function DetailPage() {
                           <td style={{ textAlign: "center" }}>{a.dias_periodo}</td>
                           <td className="num">{a.capital > 0 ? fmt(a.capital) : "—"}</td>
                           <td className="num">{a.interes_estimado > 0 ? fmt(a.interes_estimado) : "—"}</td>
+                          {hasRef && <td className="num" style={{ color: (a.refinanciado_exigible || 0) > 0 ? "#7c3aed" : undefined }}>{(a.refinanciado_exigible || 0) > 0 ? fmt(a.refinanciado_exigible) : "—"}</td>}
                           <td className="num" style={{ fontWeight: 600 }}>{a.total > 0 ? fmt(a.total) : "—"}</td>
                           <td>
                             <span style={{
@@ -588,7 +592,8 @@ export default function DetailPage() {
                         <td colSpan={4} style={{ padding: "10px 14px" }}>TOTAL</td>
                         <td className="num" style={{ padding: "10px 14px" }}>{fmt(totalCapital)}</td>
                         <td className="num" style={{ padding: "10px 14px" }}>{fmt(totalInteres)}</td>
-                        <td className="num" style={{ padding: "10px 14px" }}>{fmt(totalCapital + totalInteres)}</td>
+                        {hasRef && <td className="num" style={{ padding: "10px 14px", color: "#7c3aed" }}>{fmt(totalRef)}</td>}
+                        <td className="num" style={{ padding: "10px 14px" }}>{fmt(totalCapital + totalInteres + totalRef)}</td>
                         <td></td>
                       </tr>
                     </tfoot>
